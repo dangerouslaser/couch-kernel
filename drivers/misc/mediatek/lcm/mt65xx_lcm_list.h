@@ -273,6 +273,7 @@ extern LCM_DRIVER otm8019a_dsi_vdo_boyi_t50m_drv;
 extern LCM_DRIVER ili9881c_hd_dsi_vdo_ilitek_nt50358_3lane_lcm_drv;
 extern LCM_DRIVER jd9161_wvga_dsi_vdo_hsd_hlt_lcm_drv;  
 extern LCM_DRIVER st7701s_wvga_dsi_vdo_tn_boe_lcm_drv; // Jiangde
+extern LCM_DRIVER st7701s_wvga_dsi_vdo_boe_tn_tianxian_lcm_drv;
 extern LCM_DRIVER st7701s_wvga_dsi_vdo_tn_coe_lcm_drv; // Jiangde
 extern LCM_DRIVER jd9161_k300_fwvga_dsi_vdo_hz_lcm_drv;
 extern LCM_DRIVER ili9806e_k300_fwvga_dsi_vdo_hz_lcm_drv;

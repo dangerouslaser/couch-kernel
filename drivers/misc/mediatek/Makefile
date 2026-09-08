@@ -92,7 +92,13 @@ obj-$(CONFIG_MTK_SYNC) += sync/
 obj-$(CONFIG_MTK_FREQ_HOPPING) += freqhopping/
 obj-$(CONFIG_MTK_SECURITY_SW_SUPPORT) +=masp/
 obj-$(CONFIG_MEDIATEK_SOLUTION)  += sched/
+# COUCH: the camera ISP is built unconditionally upstream, but it calls into
+# the image-sensor driver (ISP_MCLK*_GPIO_EN), which is gated below. The HA100
+# has no camera and we build with CONFIG_MTK_IMGSENSOR unset, so gate the ISP
+# on the same symbol rather than leaving a dangling link dependency.
+ifneq ($(CONFIG_MTK_IMGSENSOR),)
 obj-y += cameraisp/src/
+endif
 ifneq ($(CONFIG_MTK_IMGSENSOR),)
 obj-y+= imgsensor/src/
 endif

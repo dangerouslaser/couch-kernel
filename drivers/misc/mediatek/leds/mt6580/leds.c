@@ -35,6 +35,7 @@
 #endif
 
 #include <mt-plat/mt_pwm.h>
+#include <mt-plat/mt_gpio.h>
 #include <mt-plat/upmu_common.h>
 
 #include "leds_sw.h"
@@ -982,8 +983,24 @@ int mt_mt65xx_led_set_cust(struct cust_mt65xx_led *cust, int level)
 		return 1;
 
 	case MT65XX_LED_MODE_GPIO:
-		LEDS_DEBUG("brightness_set_cust:go GPIO mode!!!!!\n");
-		return ((cust_set_brightness) (cust->data)) (level);
+		/* COUCH: upstream casts cust->data to a function pointer and calls
+		 * it, which only makes sense when a board file supplied one. This
+		 * board has no board file - the LED table is read from the device
+		 * tree, where odm/led@5 (button-backlight) is led_mode 2 with
+		 * data 4. That 4 is a GPIO number, not a function: stock drives it
+		 * with Sanytron's own CONFIG_X15_S90_LEDS, which exists in no
+		 * public tree. Calling it lands the CPU at address 4 ("PC is at
+		 * 0x4"), taking a prefetch abort and panicking the kernel the first
+		 * time anything writes button-backlight - which both our init and
+		 * couch-gui do every few seconds. Drive the pin instead.
+		 */
+		LEDS_DEBUG("brightness_set_cust: GPIO mode, pin %ld = %d\n",
+			   cust->data, level ? 1 : 0);
+		mt_set_gpio_mode(cust->data, GPIO_MODE_00);
+		mt_set_gpio_dir(cust->data, GPIO_DIR_OUT);
+		mt_set_gpio_out(cust->data,
+				level ? GPIO_OUT_ONE : GPIO_OUT_ZERO);
+		return 1;
 
 	case MT65XX_LED_MODE_PMIC:
 		/* for button baclight used SINK channel, when set button ISINK,

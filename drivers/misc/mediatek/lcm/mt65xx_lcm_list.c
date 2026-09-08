@@ -1081,6 +1081,10 @@ LCM_DRIVER *lcm_driver_list[] = {
 	&st7701s_wvga_dsi_vdo_tn_boe_lcm_drv,
 #endif
 
+#if defined(ST7701S_WVGA_DSI_VDO_BOE_TN_TIANXIAN)
+	&st7701s_wvga_dsi_vdo_boe_tn_tianxian_lcm_drv,
+#endif
+
 #if defined(ST7701S_WVGA_DSI_VDO_TN_COE) // Jiangde
 	&st7701s_wvga_dsi_vdo_tn_coe_lcm_drv,
 #endif
