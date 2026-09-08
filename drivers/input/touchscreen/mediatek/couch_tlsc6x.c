@@ -23,15 +23,22 @@ static struct couch_touch *panel_touch;
 
 static int couch_touch_read(struct i2c_client *client, u8 *report)
 {
-	u8 reg = 0;
-	int ret;
+	u8 reg;
+	int ret, len;
 
-	/* The vendor protocol uses a STOP between selecting and reading reg 0. */
-	ret = i2c_master_send(client, &reg, 1);
-	if (ret != 1)
-		return ret < 0 ? ret : -EIO;
-	ret = i2c_master_recv(client, report, TLSC_REPORT_SIZE);
-	return ret == TLSC_REPORT_SIZE ? 0 : (ret < 0 ? ret : -EIO);
+	/* The MT6580 non-DMA FIFO holds eight bytes. The controller's register
+	 * window supports addressed chunks; preserve STOP between address/read.
+	 */
+	for (reg = 0; reg < TLSC_REPORT_SIZE; reg += len) {
+		len = min_t(int, 8, TLSC_REPORT_SIZE - reg);
+		ret = i2c_master_send(client, &reg, 1);
+		if (ret != 1)
+			return ret < 0 ? ret : -EIO;
+		ret = i2c_master_recv(client, report + reg, len);
+		if (ret != len)
+			return ret < 0 ? ret : -EIO;
+	}
+	return 0;
 }
 
 static void couch_touch_clear(void)
