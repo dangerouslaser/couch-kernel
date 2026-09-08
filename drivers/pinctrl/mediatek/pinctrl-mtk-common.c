@@ -953,6 +953,24 @@ static int mtk_gpio_get(struct gpio_chip *chip, unsigned offset)
 static int mtk_gpio_to_irq(struct gpio_chip *chip, unsigned offset)
 {
 #ifdef CONFIG_MTK_EIC
+	struct mtk_pinctrl *pctl = dev_get_drvdata(chip->dev);
+	const struct mtk_desc_function *func = pctl->devdata->pins[offset].functions;
+	int ret;
+
+	/* gpio_request() selects GPIO mode. On MT6580 the interrupt input is
+	 * a separate mux function (EINT6, EINT9, ...), so merely mapping the
+	 * IRQ leaves matrix keypad rows disconnected from the controller.
+	 * Use the pin's advertised function rather than a board-wide mode.
+	 * Pins without a separate EINT function retain their builtin routing.
+	 */
+	for (; func && func->name; func++) {
+		if (!strncmp(func->name, "EINT", 4)) {
+			ret = mtk_pmx_set_mode(pctl->pctl_dev, offset, func->muxval);
+			if (ret)
+				return ret;
+			break;
+		}
+	}
 	return mt_gpio_to_irq(offset);
 #else
 	const struct mtk_desc_pin *pin;
