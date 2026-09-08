@@ -21,7 +21,7 @@ struct couch_touch {
 /* The MediaTek framework supplies callbacks for this single panel. */
 static struct couch_touch *panel_touch;
 
-static int couch_touch_read(struct i2c_client *client, u8 *report)
+static int couch_touch_read_once(struct i2c_client *client, u8 *report)
 {
 	u8 reg;
 	int ret, len;
@@ -39,6 +39,23 @@ static int couch_touch_read(struct i2c_client *client, u8 *report)
 			return ret < 0 ? ret : -EIO;
 	}
 	return 0;
+}
+
+static int couch_touch_read(struct i2c_client *client, u8 *report)
+{
+	int attempt, ret = -EIO;
+
+	/* The controller can NACK the first access after idle. Retry the whole
+	 * report, not a partial chunk, and bound the time spent in the IRQ thread.
+	 */
+	for (attempt = 0; attempt < 3; attempt++) {
+		ret = couch_touch_read_once(client, report);
+		if (!ret)
+			return 0;
+		if (attempt < 2)
+			usleep_range(1000, 2000);
+	}
+	return ret;
 }
 
 static void couch_touch_clear(void)
