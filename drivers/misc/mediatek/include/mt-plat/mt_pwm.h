@@ -108,6 +108,8 @@ s32 pwm_set_easy_config(struct pwm_easy_config *conf);
 s32 pwm_set_spec_config(struct pwm_spec_config *conf);
 
 void mt_pwm_dump_regs(void);
+/* Enable the register clock before direct HAL setup/status accesses. */
+void mt_pwm_power_on(u32 pwm_no, bool pmic_pad);
 void mt_pwm_disable(u32 pwm_no, u8 pmic_pad);
 
 /*----------3dLCM support-----------*/

@@ -74,6 +74,8 @@ static ssize_t ir_write(struct file *file, const char __user *buf,
 			wave[i] = ~wave[i];
 
 	wake_lock(&ir->awake);
+	/* Clock-gated PWM MMIO can wedge the bus before a timeout can run. */
+	mt_pwm_power_on(ir->pwm.pwm_no, ir->pwm.pmic_pad);
 	mt_pwm_26M_clk_enable_hal(1);
 	mt_set_intr_ack(finish);
 	mt_set_intr_ack(finish + 1);
@@ -106,9 +108,9 @@ static ssize_t ir_write(struct file *file, const char __user *buf,
 	}
 stop:
 	/* Disable includes MTK's drain delay. No DMA mapping is freed while live. */
-	mt_pwm_disable(ir->pwm.pwm_no, ir->pwm.pmic_pad);
 	mt_set_intr_ack(finish);
 	mt_set_intr_ack(finish + 1);
+	mt_pwm_disable(ir->pwm.pwm_no, ir->pwm.pmic_pad);
 	wake_unlock(&ir->awake);
 free:
 	dma_free_coherent(ir->dev, count, wave, physical);

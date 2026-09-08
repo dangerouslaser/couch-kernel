@@ -69,7 +69,7 @@ static struct pwm_device pwm_dat = {
 
 static struct pwm_device *pwm_dev = &pwm_dat;
 
-static void mt_pwm_power_on(u32 pwm_no, bool pmic_pad)
+void mt_pwm_power_on(u32 pwm_no, bool pmic_pad)
 {
 	mt_pwm_power_on_hal(pwm_no, pmic_pad, &(pwm_dev->power_flag));
 }
