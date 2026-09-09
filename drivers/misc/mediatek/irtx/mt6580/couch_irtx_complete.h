@@ -11,4 +11,11 @@ static inline bool couch_irtx_complete(u32 sent, bool *saw_zero,
 		*saw_zero = true;
 	return *saw_zero && sent == 1 && elapsed_us >= expected_us;
 }
+/* Keep the first valid observation; later minimum-duration waiting must not
+ * overwrite the measurement of hardware completion. */
+static inline s64 couch_irtx_first_complete(u32 sent, bool saw_zero,
+					  s64 first_us, s64 elapsed_us)
+{
+	return sent == 1 && saw_zero && first_us < 0 ? elapsed_us : first_us;
+}
 #endif

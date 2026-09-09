@@ -92,7 +92,8 @@ static ssize_t ir_write(struct file *file, const char __user *buf,
 	u32 duration, clocks, actual_us;
 	s32 sent_before = 0, sent;
 	bool saw_zero = false;
-	ktime_t started;
+	ktime_t started, setup_started;
+	s64 first_complete_us = -1, elapsed_us, setup_us;
 	size_t wave_bytes = count - sizeof(u32);
 	int ret;
 
@@ -138,6 +139,7 @@ static ssize_t ir_write(struct file *file, const char __user *buf,
 	ir->pwm.PWM_MODE_MEMORY_REGS.BUF0_SIZE = wave_bytes / 4 - 1;
 	sent_before = mt_get_pwm_send_wavenum_hal(ir->pwm.pwm_no);
 	saw_zero = sent_before == 0;
+	setup_started = ktime_get();
 	ret = pwm_set_spec_config(&ir->pwm);
 	if (ret) {
 		/* MTK HAL errors are not all Linux errno values. */
@@ -149,6 +151,7 @@ static ssize_t ir_write(struct file *file, const char __user *buf,
 	 * Start the minimum-time guard after setup: this intentionally waits a
 	 * full frame even if the hardware already began during configuration. */
 	started = ktime_get();
+	setup_us = ktime_us_delta(started, setup_started);
 	deadline = jiffies + msecs_to_jiffies(DIV_ROUND_UP(actual_us, 1000) + 50);
 	for (;;) {
 		if (mt_get_intr_status(finish + 1) > 0) {
@@ -160,8 +163,15 @@ static ssize_t ir_write(struct file *file, const char __user *buf,
 			ret = -EIO;
 			break;
 		}
-		if (couch_irtx_complete(sent, &saw_zero,
-				       ktime_us_delta(ktime_get(), started), actual_us)) {
+		elapsed_us = ktime_us_delta(ktime_get(), started);
+		/* Record the first valid hardware completion independently of the
+		 * conservative minimum-time guard. A retained prior count is ignored. */
+		first_complete_us = couch_irtx_first_complete(sent, saw_zero,
+						       first_complete_us, elapsed_us);
+		if (couch_irtx_complete(sent, &saw_zero, elapsed_us, actual_us)) {
+			dev_info(ir->dev, "TX timing carrier=%u bytes=%zu expected_us=%u setup_us=%lld first_complete_us=%lld guard_complete_us=%lld sent_before=%d\n",
+				 ctx->carrier, wave_bytes, actual_us, setup_us,
+				 first_complete_us, elapsed_us, sent_before);
 			ret = count;
 			break;
 		}
