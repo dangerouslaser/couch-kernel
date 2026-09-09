@@ -18,6 +18,7 @@
 #include <linux/jiffies.h>
 #include <linux/wakelock.h>
 #include <mt-plat/mt_pwm.h>
+#include <mt-plat/mt_pwm_hal_pub.h>
 #include <mach/mt_pwm_hal.h>
 
 #define IRTX_SET_CARRIER _IOW('R', 0, unsigned int)
@@ -87,6 +88,7 @@ static ssize_t ir_write(struct file *file, const char __user *buf,
 	unsigned long deadline;
 	unsigned int i, finish = ir->pwm.pwm_no * 2;
 	u32 duration, clocks, actual_us;
+	s32 sent_before = 0;
 	size_t wave_bytes = count - sizeof(u32);
 	int ret;
 
@@ -130,6 +132,7 @@ static ssize_t ir_write(struct file *file, const char __user *buf,
 	mt_set_intr_ack(finish + 1);
 	ir->pwm.PWM_MODE_MEMORY_REGS.BUF0_BASE_ADDR = physical;
 	ir->pwm.PWM_MODE_MEMORY_REGS.BUF0_SIZE = wave_bytes / 4 - 1;
+	sent_before = mt_get_pwm_send_wavenum_hal(ir->pwm.pwm_no);
 	ret = pwm_set_spec_config(&ir->pwm);
 	if (ret) {
 		/* MTK HAL errors are not all Linux errno values. */
@@ -156,6 +159,14 @@ static ssize_t ir_write(struct file *file, const char __user *buf,
 		usleep_range(500, 1000);
 	}
 stop:
+	if (ret < 0) {
+		dev_err(ir->dev, "TX result=%d carrier=%u clocks=%u waveform_bytes=%zu expected_us=%u sent_before=%d sent_after=%d\n",
+			ret, ctx->carrier, clocks, wave_bytes, actual_us, sent_before,
+			mt_get_pwm_send_wavenum_hal(ir->pwm.pwm_no));
+		/* Observe before ack/disable while MMIO remains powered. Never turn
+		 * on unhandled shared interrupts merely to diagnose a timeout. */
+		mt_pwm_dump_channel_hal(ir->pwm.pwm_no);
+	}
 	/* Disable includes MTK's drain delay. No DMA mapping is freed while live. */
 	mt_set_intr_ack(finish);
 	mt_set_intr_ack(finish + 1);
