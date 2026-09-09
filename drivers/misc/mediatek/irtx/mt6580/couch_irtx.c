@@ -16,6 +16,8 @@
 #include <linux/mutex.h>
 #include <linux/delay.h>
 #include <linux/jiffies.h>
+#include <linux/ktime.h>
+#include "couch_irtx_complete.h"
 #include <linux/wakelock.h>
 #include <mt-plat/mt_pwm.h>
 #include <mt-plat/mt_pwm_hal_pub.h>
@@ -88,7 +90,9 @@ static ssize_t ir_write(struct file *file, const char __user *buf,
 	unsigned long deadline;
 	unsigned int i, finish = ir->pwm.pwm_no * 2;
 	u32 duration, clocks, actual_us;
-	s32 sent_before = 0;
+	s32 sent_before = 0, sent;
+	bool saw_zero = false;
+	ktime_t started;
 	size_t wave_bytes = count - sizeof(u32);
 	int ret;
 
@@ -133,21 +137,31 @@ static ssize_t ir_write(struct file *file, const char __user *buf,
 	ir->pwm.PWM_MODE_MEMORY_REGS.BUF0_BASE_ADDR = physical;
 	ir->pwm.PWM_MODE_MEMORY_REGS.BUF0_SIZE = wave_bytes / 4 - 1;
 	sent_before = mt_get_pwm_send_wavenum_hal(ir->pwm.pwm_no);
+	saw_zero = sent_before == 0;
 	ret = pwm_set_spec_config(&ir->pwm);
 	if (ret) {
 		/* MTK HAL errors are not all Linux errno values. */
 		ret = -EIO;
 		goto stop;
 	}
-	/* Poll completion without enabling an
-	 * unhandled shared PWM interrupt. Allow scheduling slack, never forever. */
+	/* Status remains zero with IRQs masked on HA100 even after SEND_WAVENUM
+	 * reaches one. Poll that counter without enabling an unhandled IRQ.
+	 * Start the minimum-time guard after setup: this intentionally waits a
+	 * full frame even if the hardware already began during configuration. */
+	started = ktime_get();
 	deadline = jiffies + msecs_to_jiffies(DIV_ROUND_UP(actual_us, 1000) + 50);
 	for (;;) {
 		if (mt_get_intr_status(finish + 1) > 0) {
 			ret = -EIO;
 			break;
 		}
-		if (mt_get_intr_status(finish) > 0) {
+		sent = mt_get_pwm_send_wavenum_hal(ir->pwm.pwm_no);
+		if (sent < 0 || sent > 1) {
+			ret = -EIO;
+			break;
+		}
+		if (couch_irtx_complete(sent, &saw_zero,
+				       ktime_us_delta(ktime_get(), started), actual_us)) {
 			ret = count;
 			break;
 		}
@@ -160,9 +174,9 @@ static ssize_t ir_write(struct file *file, const char __user *buf,
 	}
 stop:
 	if (ret < 0) {
-		dev_err(ir->dev, "TX result=%d carrier=%u clocks=%u waveform_bytes=%zu expected_us=%u sent_before=%d sent_after=%d\n",
+		dev_err(ir->dev, "TX result=%d carrier=%u clocks=%u waveform_bytes=%zu expected_us=%u sent_before=%d sent_after=%d observed_zero=%u\n",
 			ret, ctx->carrier, clocks, wave_bytes, actual_us, sent_before,
-			mt_get_pwm_send_wavenum_hal(ir->pwm.pwm_no));
+			mt_get_pwm_send_wavenum_hal(ir->pwm.pwm_no), saw_zero);
 		/* Observe before ack/disable while MMIO remains powered. Never turn
 		 * on unhandled shared interrupts merely to diagnose a timeout. */
 		mt_pwm_dump_channel_hal(ir->pwm.pwm_no);
