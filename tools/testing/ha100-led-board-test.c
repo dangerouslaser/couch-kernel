@@ -16,6 +16,11 @@ int main(void)
 		assert(ha100_led_boot_state(i, 1) == normal[i]);
 		assert(ha100_led_boot_state(i, 0) == recovery[i]);
 	}
+	/* A missing empty default is acceptable; no functional state is optional. */
+	assert(!ha100_led_state_required(HA100_DEFAULT));
+	for (i = HA100_SUPPLY_LOW; i < HA100_STATE_COUNT; i++)
+		assert(ha100_led_state_required(i));
+	assert(!ha100_led_state_required(HA100_STATE_COUNT));
 	assert(ha100_led_boot_state(4, 1) == -1);
 	assert(ha100_led_runtime_state("red", 2, 1) == HA100_CHARGE_HIGH);
 	assert(ha100_led_runtime_state("red", 2, 255) == HA100_CHARGE_HIGH);

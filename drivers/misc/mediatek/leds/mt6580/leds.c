@@ -217,22 +217,29 @@ int ha100_led_board_init(void)
 	if (!node || !of_device_is_available(node)) {
 		of_node_put(node);
 		ret = -ENODEV;
+		pr_err("HA100 LED: board DT node missing or disabled\n");
 		goto out;
 	}
 	ha100_led_board_device = of_find_device_by_node(node);
 	of_node_put(node);
 	if (!ha100_led_board_device) {
 		ret = -EPROBE_DEFER;
+		pr_info("HA100 LED: waiting for board platform device\n");
 		goto out;
 	}
 	ha100_led_board_pinctrl = pinctrl_get(&ha100_led_board_device->dev);
 	if (IS_ERR(ha100_led_board_pinctrl)) {
 		ret = PTR_ERR(ha100_led_board_pinctrl);
+		pr_err("HA100 LED: pinctrl acquisition failed: %d\n", ret);
 		ha100_led_board_pinctrl = NULL;
 		goto fail;
 	}
-	/* Validate every required state before the first electrical change. */
+	/* Validate all eight functional states before any electrical change.
+	 * Stock default is empty and may not exist as a pinctrl state.
+	 */
 	for (i = 0; i < HA100_STATE_COUNT; i++) {
+		if (!ha100_led_state_required(i))
+			continue;
 		state = pinctrl_lookup_state(ha100_led_board_pinctrl,
 					     ha100_led_state_names[i]);
 		if (IS_ERR(state)) {

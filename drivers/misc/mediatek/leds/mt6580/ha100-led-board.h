@@ -16,6 +16,14 @@ static const char * const ha100_led_state_names[HA100_STATE_COUNT] = {
 	"chrg_gpio_high", "stdby_gpio_low", "stdby_gpio_high"
 };
 
+/* Empty stock default creates no state in this pinctrl core. It is never
+ * selected. Every functional state must still resolve before any writes.
+ */
+static int ha100_led_state_required(unsigned int state)
+{
+	return state > HA100_DEFAULT && state < HA100_STATE_COUNT;
+}
+
 static int ha100_led_runtime_state(const char *name, long selector, int level)
 {
 	if (!name)
