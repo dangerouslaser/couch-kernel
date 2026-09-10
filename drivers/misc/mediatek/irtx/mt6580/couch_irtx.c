@@ -31,6 +31,10 @@
 
 /* Explicit opt-in: observe one transfer without changing its waveform, pin
  * mux, direction, IRQ masks or cleanup. Disabled in normal operation. */
+/* The vendor GPIO wrapper requires bit 31 and strips it before accessing
+ * GPIO8. Bare pin numbers trigger dump_stack(), destroying capture timing. */
+#define IRTX_PAD_PIN (8UL | 0x80000000UL)
+
 static bool output_telemetry;
 module_param(output_telemetry, bool, 0600);
 MODULE_PARM_DESC(output_telemetry, "Trace powered PWM registers and GPIO8 input during IR output");
@@ -51,13 +55,13 @@ static void ir_sample_pad(struct ir_pad_trace *trace)
 	 * enabled in read-only live snapshots. Never enable or configure it here.
 	 * The DIN register is observational; alternate-function feedback is not
 	 * guaranteed to measure LED current. No IRQ/preemption disabling. */
-	trace->mode = mt_get_gpio_mode(8);
-	trace->direction = mt_get_gpio_dir(8);
-	trace->ies = mt_get_gpio_ies(8);
+	trace->mode = mt_get_gpio_mode(IRTX_PAD_PIN);
+	trace->direction = mt_get_gpio_dir(IRTX_PAD_PIN);
+	trace->ies = mt_get_gpio_ies(IRTX_PAD_PIN);
 	for (i = 0; i < 256; i++) {
 		if (ktime_us_delta(ktime_get(), begin) >= 500)
 			break;
-		value = mt_get_gpio_in(8);
+		value = mt_get_gpio_in(IRTX_PAD_PIN);
 		if (value == 1)
 			trace->high++;
 		else if (value == 0)
