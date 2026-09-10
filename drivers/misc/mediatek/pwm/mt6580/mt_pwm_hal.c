@@ -407,6 +407,8 @@ void mt_pwm_dump_channel_hal(u32 pwm_no)
 	pr_err("couch-pwm channel=%u enable=%08x clock26=%08x irq_enable=%08x irq_status=%08x\n",
 		pwm_no, INREG32(PWM_ENABLE), INREG32(PWM_CK_26M_SEL),
 		INREG32(PWM_INT_ENABLE), INREG32(PWM_INT_STATUS));
+	pr_err("couch-pwm buffer_addr=%08x output_3dlcm=%08x\n",
+		INREG32(base + 4 * PWM_BUF0_BASE_ADDR), INREG32(PWM_3DLCM));
 	pr_err("couch-pwm con=%08x high=%08x low=%08x guard=%08x\n",
 		INREG32(base + 4 * PWM_CON), INREG32(base + 4 * PWM_HDURATION),
 		INREG32(base + 4 * PWM_LDURATION), INREG32(base + 4 * PWM_GDURATION));
