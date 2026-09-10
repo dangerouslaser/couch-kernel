@@ -754,6 +754,9 @@ static int mt65xx_leds_probe(struct platform_device *pdev)
              printk("%s,line = %d\n", __func__,__LINE__);
              Leds_Enable();
              #endif
+	ret = ha100_led_board_init();
+	if (ret)
+		return ret;
 	get_div_array();
 	for (i = 0; i < MT65XX_LED_TYPE_TOTAL; i++) {
 		if (cust_led_list[i].mode == MT65XX_LED_MODE_NONE) {
@@ -842,6 +845,7 @@ static int mt65xx_leds_probe(struct platform_device *pdev)
 		}
 	}
 
+	ha100_led_board_release();
 	return ret;
 }
 
@@ -858,6 +862,7 @@ static int mt65xx_leds_remove(struct platform_device *pdev)
 		g_leds_data[i] = NULL;
 	}
 
+	ha100_led_board_release();
 	return 0;
 }
 

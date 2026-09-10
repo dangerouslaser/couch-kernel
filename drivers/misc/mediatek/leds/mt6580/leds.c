@@ -18,6 +18,10 @@
 #include <linux/ctype.h>
 #include <linux/leds.h>
 #include <linux/of.h>
+#include <linux/of_platform.h>
+#include <linux/pinctrl/consumer.h>
+#include <mt-plat/mt_boot_common.h>
+#include "ha100-led-board.h"
 /* #include <linux/leds-mt65xx.h> */
 #include <linux/workqueue.h>
 #include <linux/wakelock.h>
@@ -164,6 +168,121 @@ void mt_set_bl_div(unsigned int div)
 void mt_set_bl_frequency(unsigned int freq)
 {
 	bl_frequency_hal = freq;
+}
+
+/* Recovered from stock get_cust_led_dtsi / CONFIG_X15_S90_LEDS.
+ * The DT owns pin numbers: 3v3 supply, button light, charge and standby are
+ * separate named states. In particular data=4 is NOT touchscreen reset GPIO4.
+ * Never infer IR wiring from the supply name or toggle unlisted raw GPIOs.
+ */
+static DEFINE_MUTEX(ha100_led_board_mutex);
+static struct platform_device *ha100_led_board_device;
+static struct pinctrl *ha100_led_board_pinctrl;
+static struct pinctrl_state *ha100_led_board_states[HA100_STATE_COUNT];
+static bool ha100_led_board_ready;
+
+static void ha100_led_board_release_locked(void)
+{
+	ha100_led_board_ready = false;
+	if (ha100_led_board_pinctrl)
+		pinctrl_put(ha100_led_board_pinctrl);
+	ha100_led_board_pinctrl = NULL;
+	if (ha100_led_board_device)
+		put_device(&ha100_led_board_device->dev);
+	ha100_led_board_device = NULL;
+	memset(ha100_led_board_states, 0, sizeof(ha100_led_board_states));
+	/* Leave electrical state unchanged; removing a driver must not blindly
+	 * switch a possibly shared board supply off.
+	 */
+}
+
+void ha100_led_board_release(void)
+{
+	mutex_lock(&ha100_led_board_mutex);
+	ha100_led_board_release_locked();
+	mutex_unlock(&ha100_led_board_mutex);
+}
+
+int ha100_led_board_init(void)
+{
+	struct device_node *node;
+	struct pinctrl_state *state;
+	unsigned int i;
+	int ret = 0;
+
+	mutex_lock(&ha100_led_board_mutex);
+	if (ha100_led_board_ready)
+		goto out;
+	node = of_find_compatible_node(NULL, NULL, "mediatek,kpd_btn_light");
+	if (!node || !of_device_is_available(node)) {
+		of_node_put(node);
+		ret = -ENODEV;
+		goto out;
+	}
+	ha100_led_board_device = of_find_device_by_node(node);
+	of_node_put(node);
+	if (!ha100_led_board_device) {
+		ret = -EPROBE_DEFER;
+		goto out;
+	}
+	ha100_led_board_pinctrl = pinctrl_get(&ha100_led_board_device->dev);
+	if (IS_ERR(ha100_led_board_pinctrl)) {
+		ret = PTR_ERR(ha100_led_board_pinctrl);
+		ha100_led_board_pinctrl = NULL;
+		goto fail;
+	}
+	/* Validate every required state before the first electrical change. */
+	for (i = 0; i < HA100_STATE_COUNT; i++) {
+		state = pinctrl_lookup_state(ha100_led_board_pinctrl,
+					     ha100_led_state_names[i]);
+		if (IS_ERR(state)) {
+			ret = PTR_ERR(state);
+			pr_err("HA100 LED: missing state %s: %d\n",
+			       ha100_led_state_names[i], ret);
+			goto fail;
+		}
+		ha100_led_board_states[i] = state;
+	}
+	/* Stock ordering and three 2ms gaps; no default/low-state pulse. */
+	for (i = 0; i < 4; i++) {
+		int index = ha100_led_boot_state(i, get_boot_mode() == NORMAL_BOOT);
+
+		ret = pinctrl_select_state(ha100_led_board_pinctrl,
+					   ha100_led_board_states[index]);
+		if (ret) {
+			pr_err("HA100 LED: select %s failed: %d\n",
+			       ha100_led_state_names[index], ret);
+			goto fail;
+		}
+		if (i < 3)
+			udelay(2000);
+	}
+	ha100_led_board_ready = true;
+	pr_info("HA100 LED: stock supply/button/charge/standby states initialized\n");
+	goto out;
+fail:
+	ha100_led_board_release_locked();
+out:
+	mutex_unlock(&ha100_led_board_mutex);
+	return ret;
+}
+
+static int ha100_led_board_set(struct cust_mt65xx_led *cust, int level)
+{
+	int state = ha100_led_runtime_state(cust->name, cust->data, level);
+	int ret;
+
+	/* Unknown/mismatched DT selectors must never become raw pins or calls. */
+	if (state < 0)
+		return -EINVAL;
+	mutex_lock(&ha100_led_board_mutex);
+	if (!ha100_led_board_ready)
+		ret = -ENODEV;
+	else
+		ret = pinctrl_select_state(ha100_led_board_pinctrl,
+					   ha100_led_board_states[state]);
+	mutex_unlock(&ha100_led_board_mutex);
+	return ret ? ret : 1;
 }
 
 struct cust_mt65xx_led *get_cust_led_dtsi(void)
@@ -983,34 +1102,7 @@ int mt_mt65xx_led_set_cust(struct cust_mt65xx_led *cust, int level)
 		return 1;
 
 	case MT65XX_LED_MODE_GPIO:
-#ifdef CONFIG_TOUCHSCREEN_COUCH_TLSC6X
-		/* HA100's stock LED data=4 is not a usable button LED GPIO:
-		 * rstoutput0/1 in its DT assign GPIO4 to TLSC6x reset. Driving
-		 * it low on dim holds touch in reset until the next key wake.
-		 * Leave reset ownership with tpd; button LED control needs the
-		 * missing vendor LED implementation, not this GPIO fallback.
-		 */
-		if (!strcmp(cust->name, "button-backlight") && cust->data == 4)
-			return 1;
-#endif
-		/* COUCH: upstream casts cust->data to a function pointer and calls
-		 * it, which only makes sense when a board file supplied one. This
-		 * board has no board file - the LED table is read from the device
-		 * tree, where odm/led@5 (button-backlight) is led_mode 2 with
-		 * data 4. That 4 is a GPIO number, not a function: stock drives it
-		 * with Sanytron's own CONFIG_X15_S90_LEDS, which exists in no
-		 * public tree. Calling it lands the CPU at address 4 ("PC is at
-		 * 0x4"), taking a prefetch abort and panicking the kernel the first
-		 * time anything writes button-backlight - which both our init and
-		 * couch-gui do every few seconds. Drive the pin instead.
-		 */
-		LEDS_DEBUG("brightness_set_cust: GPIO mode, pin %ld = %d\n",
-			   cust->data, level ? 1 : 0);
-		mt_set_gpio_mode(cust->data, GPIO_MODE_00);
-		mt_set_gpio_dir(cust->data, GPIO_DIR_OUT);
-		mt_set_gpio_out(cust->data,
-				level ? GPIO_OUT_ONE : GPIO_OUT_ZERO);
-		return 1;
+		return ha100_led_board_set(cust, level);
 
 	case MT65XX_LED_MODE_PMIC:
 		/* for button baclight used SINK channel, when set button ISINK,

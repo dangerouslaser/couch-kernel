@@ -54,6 +54,8 @@ extern int mt_mt65xx_blink_set(struct led_classdev *led_cdev,
 			       unsigned long *delay_off);
 
 extern struct cust_mt65xx_led *mt_get_cust_led_list(void);
+extern int ha100_led_board_init(void);
+extern void ha100_led_board_release(void);
 
 extern int mtkfb_set_backlight_level(unsigned int level);
 #endif
