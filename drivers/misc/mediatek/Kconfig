@@ -7,6 +7,12 @@ menuconfig MEDIATEK_SOLUTION
 
 if MEDIATEK_SOLUTION
 
+config COUCH_HA100
+	bool "Couch HA100 board quirks"
+	default n
+	help
+	  Enable HA100 wake wiring without modifying its shared vendor DT overlay.
+
 config PROJECT_K100
     bool "IS_K100_PROJECT"
     default n
