@@ -553,4 +553,12 @@ source "drivers/misc/genwqe/Kconfig"
 source "drivers/misc/echo/Kconfig"
 source "drivers/misc/cxl/Kconfig"
 source "drivers/misc/mediatek/Kconfig"
+config COUCH_MOTION
+	bool "Couch HA100 MIR3DA acceleration"
+	depends on I2C
+	help
+	  Board-specific I2C2/0x27 sensor support for display-standby lift
+	  detection. Exposes enabled and accel under /sys/kernel/couch_motion.
+	  Does not claim a wake IRQ or support waking a suspended CPU.
+
 endmenu

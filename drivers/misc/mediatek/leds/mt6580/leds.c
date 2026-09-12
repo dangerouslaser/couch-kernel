@@ -983,6 +983,16 @@ int mt_mt65xx_led_set_cust(struct cust_mt65xx_led *cust, int level)
 		return 1;
 
 	case MT65XX_LED_MODE_GPIO:
+#ifdef CONFIG_TOUCHSCREEN_COUCH_TLSC6X
+		/* HA100's stock LED data=4 is not a usable button LED GPIO:
+		 * rstoutput0/1 in its DT assign GPIO4 to TLSC6x reset. Driving
+		 * it low on dim holds touch in reset until the next key wake.
+		 * Leave reset ownership with tpd; button LED control needs the
+		 * missing vendor LED implementation, not this GPIO fallback.
+		 */
+		if (!strcmp(cust->name, "button-backlight") && cust->data == 4)
+			return 1;
+#endif
 		/* COUCH: upstream casts cust->data to a function pointer and calls
 		 * it, which only makes sense when a board file supplied one. This
 		 * board has no board file - the LED table is read from the device

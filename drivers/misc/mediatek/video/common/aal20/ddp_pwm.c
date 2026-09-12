@@ -312,6 +312,14 @@ static void disp_pwm_set_enabled(cmdqRecHandle cmdq, disp_pwm_id_t id, int enabl
 	int old_en;
 
 	old_en = atomic_xchg(&g_pwm_en[index], enabled);
+#if defined(CONFIG_ARCH_MT6580)
+	/* HA100: display power/idle transitions may lose PWM_EN while the
+	 * software cache still says enabled. A nonzero duty cycle alone then
+	 * leaves the glass dark; reconcile the live bit while clocks are on.
+	 */
+	if ((DISP_REG_GET(reg_base + DISP_PWM_EN_OFF) & 0x1) != enabled)
+		old_en = -1;
+#endif
 	if (old_en != enabled) {
 		if (enabled) {
 			/* Always use CPU to config DISP_PWM EN to avoid race condition */
@@ -559,6 +567,13 @@ static int ddp_pwm_power_on(DISP_MODULE_ENUM module, void *handle)
 #endif
 	}
 #endif
+#if defined(CONFIG_ARCH_MT6580)
+	/* Reapply both duty and enable after hardware context may be lost. */
+	if (module == DISP_MODULE_PWM0) {
+		atomic_set(&g_pwm_en[0], -1);
+		g_pwm_is_change_state = true;
+	}
+#endif
 	ret = disp_pwm_get_cust_led(&pwm_src, &pwm_div);
 	if (!ret)
 		disp_pwm_clksource_enable(pwm_src);
@@ -576,6 +591,11 @@ static int ddp_pwm_power_off(DISP_MODULE_ENUM module, void *handle)
 	int ret = -1;
 
 	disp_pwm_backlight_status(false);
+#if defined(CONFIG_ARCH_MT6580)
+	if (module == DISP_MODULE_PWM0)
+		atomic_set(&g_pwm_en[0], -1);
+#endif
+
 
 #ifdef ENABLE_CLK_MGR
 	if (module == DISP_MODULE_PWM0) {

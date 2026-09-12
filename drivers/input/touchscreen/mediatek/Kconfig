@@ -234,4 +234,12 @@ config TOUCHSCREEN_LGE_FT8707
 	  connected to your system.
 	  To compile this dirver as a module, choose M here: the
 	  module will be called.
+config TOUCHSCREEN_COUCH_TLSC6X
+	bool "HA100 TLSC6x input-only touchscreen"
+	depends on I2C && TOUCHSCREEN_MTK
+	default n
+	help
+	  Read the HA100 touchscreen using its existing controller firmware.
+	  This driver contains no firmware updater or calibration writer.
+
 endif

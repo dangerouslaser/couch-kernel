@@ -171,5 +171,7 @@ void mt_set_pwm_3dlcm_inv_hal(u32 pwm_no, u8 inv);
 void mt_set_pwm_3dlcm_base_hal(u32 pwm_no);
 
 void mt_pwm_26M_clk_enable_hal(u32 enable);
+/* Caller must hold the channel and shared bus clocks on. */
+void mt_pwm_dump_channel_hal(u32 pwm_no);
 
 #endif

@@ -395,6 +395,26 @@ void mt_set_pwm_buf0_size_hal(uint32_t pwm_no, u16 size)
 	OUTREG32(reg_buff0_size, size);
 }
 
+/* Only call while this channel and the shared PWM bus clock are powered.
+ * Unlike the legacy full dump, do not read other channels' gated registers.
+ * All fields are ordinary read-only observations, never IRQ acknowledgements. */
+void mt_pwm_dump_channel_hal(u32 pwm_no)
+{
+	unsigned long base;
+	if (pwm_no >= PWM_MAX)
+		return;
+	base = PWM_register[pwm_no];
+	pr_err("couch-pwm channel=%u enable=%08x clock26=%08x irq_enable=%08x irq_status=%08x\n",
+		pwm_no, INREG32(PWM_ENABLE), INREG32(PWM_CK_26M_SEL),
+		INREG32(PWM_INT_ENABLE), INREG32(PWM_INT_STATUS));
+	pr_err("couch-pwm con=%08x high=%08x low=%08x guard=%08x\n",
+		INREG32(base + 4 * PWM_CON), INREG32(base + 4 * PWM_HDURATION),
+		INREG32(base + 4 * PWM_LDURATION), INREG32(base + 4 * PWM_GDURATION));
+	pr_err("couch-pwm buffer_words_minus_one=%08x requested_waves=%08x sent_waves=%08x\n",
+		INREG32(base + 4 * PWM_BUF0_SIZE), INREG32(base + 4 * PWM_WAVE_NUM),
+		INREG32(base + 4 * PWM_SEND_WAVENUM));
+}
+
 void mt_pwm_dump_regs_hal(void)
 {
 	int i;
