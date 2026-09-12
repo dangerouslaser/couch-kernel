@@ -425,7 +425,10 @@ matrix_keypad_parse_dt(struct device *dev)
 
 	if (of_get_property(np, "linux,no-autorepeat", NULL))
 		pdata->no_autorepeat = true;
-	if (of_get_property(np, "linux,wakeup", NULL))
+	/* The HA100 vendor overlay predates wake support. Keep this quirk in
+	 * the trial kernel so the independent rescue DT remains untouched. */
+	if ((IS_ENABLED(CONFIG_COUCH_HA100) && !strcmp(np->name, "mt_gpio_kpd")) ||
+	    of_get_property(np, "linux,wakeup", NULL))
 		pdata->wakeup = true;
 	if (of_get_property(np, "gpio-activelow", NULL))
 		pdata->active_low = true;
