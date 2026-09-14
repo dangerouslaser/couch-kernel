@@ -38,15 +38,95 @@ static struct sk_buff_head hci_stp_txq;
 static struct work_struct hci_stp_tx_work;
 static atomic_t hci_stp_reset_pending = ATOMIC_INIT(0);
 
-static void hci_stp_rx(const PUINT8 data, INT32 size)
+/* H4 reassembly. The STP payload is the H4 stream the radio produces:
+ * packet type byte, header, payload, and an STP packet may hold a partial
+ * or several HCI packets. hci_recv_stream_fragment did this in 3.18 and is
+ * gone from 4.1 on, so the driver carries its own and works on both cores.
+ * Only the STP receive thread calls this, so no lock. */
+static struct sk_buff *hci_stp_rx_skb;
+static unsigned int hci_stp_rx_need;
+static bool hci_stp_rx_in_header;
+
+static void hci_stp_rx_reset(void)
+{
+	kfree_skb(hci_stp_rx_skb);
+	hci_stp_rx_skb = NULL;
+	hci_stp_rx_need = 0;
+}
+
+static void hci_stp_rx(const UINT8 *data, INT32 size)
 {
 	struct hci_dev *hdev = hci_stp_hdev;
 
 	if (!hdev || !test_bit(HCI_RUNNING, &hdev->flags) || size <= 0)
 		return;
-	/* The STP payload is the H4 stream the host wrote and the radio
-	 * answered: packet type byte, then the HCI packet. */
-	hci_recv_stream_fragment(hdev, (void *)data, size);
+	while (size > 0) {
+		unsigned int take;
+
+		if (!hci_stp_rx_skb) {
+			u8 type = *data++;
+
+			size--;
+			switch (type) {
+			case HCI_EVENT_PKT:
+				hci_stp_rx_need = HCI_EVENT_HDR_SIZE;
+				break;
+			case HCI_ACLDATA_PKT:
+				hci_stp_rx_need = HCI_ACL_HDR_SIZE;
+				break;
+			case HCI_SCODATA_PKT:
+				hci_stp_rx_need = HCI_SCO_HDR_SIZE;
+				break;
+			default:
+				BT_ERR("%s: unknown H4 packet type 0x%02x, dropping %d bytes",
+				       HCI_STP_NAME, type, size);
+				hdev->stat.err_rx++;
+				return;
+			}
+			hci_stp_rx_skb = bt_skb_alloc(HCI_MAX_FRAME_SIZE, GFP_ATOMIC);
+			if (!hci_stp_rx_skb) {
+				hci_stp_rx_need = 0;
+				return;
+			}
+			bt_cb(hci_stp_rx_skb)->pkt_type = type;
+			hci_stp_rx_in_header = true;
+			continue;
+		}
+		take = min_t(unsigned int, hci_stp_rx_need, (unsigned int)size);
+		if (skb_tailroom(hci_stp_rx_skb) < take) {
+			BT_ERR("%s: oversized packet, dropping", HCI_STP_NAME);
+			hci_stp_rx_reset();
+			hdev->stat.err_rx++;
+			return;
+		}
+		memcpy(skb_put(hci_stp_rx_skb, take), data, take);
+		data += take;
+		size -= take;
+		hci_stp_rx_need -= take;
+		if (hci_stp_rx_need)
+			continue;
+		if (hci_stp_rx_in_header) {
+			const u8 *h = hci_stp_rx_skb->data;
+
+			hci_stp_rx_in_header = false;
+			switch (bt_cb(hci_stp_rx_skb)->pkt_type) {
+			case HCI_EVENT_PKT:
+				hci_stp_rx_need = h[1];
+				break;
+			case HCI_ACLDATA_PKT:
+				hci_stp_rx_need = h[2] | (h[3] << 8);
+				break;
+			default:
+				hci_stp_rx_need = h[2];
+				break;
+			}
+			if (hci_stp_rx_need)
+				continue;
+		}
+		hdev->stat.byte_rx += hci_stp_rx_skb->len + 1;
+		hci_recv_frame(hdev, hci_stp_rx_skb);
+		hci_stp_rx_skb = NULL;
+	}
 }
 
 /* The STP core treats a function without an event callback as inactive, so
@@ -149,6 +229,7 @@ static int hci_stp_open(struct hci_dev *hdev)
 		return -ENODEV;
 	}
 	atomic_set(&hci_stp_reset_pending, 0);
+	hci_stp_rx_reset();
 	mtk_wcn_stp_register_if_rx(hci_stp_rx);
 	mtk_wcn_stp_register_event_cb(BT_TASK_INDX, hci_stp_event);
 	mtk_wcn_stp_register_tx_event_cb(BT_TASK_INDX, hci_stp_tx_resume);
@@ -169,6 +250,7 @@ static int hci_stp_close(struct hci_dev *hdev)
 	mtk_wcn_stp_register_if_rx(NULL);
 	mtk_wcn_stp_register_event_cb(BT_TASK_INDX, NULL);
 	mtk_wcn_stp_register_tx_event_cb(BT_TASK_INDX, NULL);
+	hci_stp_rx_reset();
 	if (mtk_wcn_wmt_func_off(WMTDRV_TYPE_BT) == MTK_WCN_BOOL_FALSE)
 		BT_ERR("%s: WMT failed to power Bluetooth off", HCI_STP_NAME);
 	else
