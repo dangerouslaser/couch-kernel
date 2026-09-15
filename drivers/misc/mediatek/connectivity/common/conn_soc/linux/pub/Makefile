@@ -25,3 +25,5 @@ obj-y += osal.o \
          wmt_chrdev_wifi.o
 
 endif
+
+obj-$(CONFIG_MTK_COMBO_BT_HCI) += hci_stp.o
