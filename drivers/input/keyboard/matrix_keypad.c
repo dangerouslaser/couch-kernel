@@ -26,6 +26,33 @@
 #include <linux/of_gpio.h>
 #include <linux/of_platform.h>
 
+/*
+ * Couch HA100 (CONFIG_COUCH_HA100): the keypad node lives only in the vendor
+ * boot overlay (odmdtbo), which is shared with Android and rewritten by every
+ * installer or restore, so its timings cannot be fixed in a device tree we
+ * ship. The stock values are debounce-delay-ms = 50, which drops rapid taps
+ * (debounce applies to press and release), and col-scan-delay-us = 200 for a
+ * 4x6 matrix. Worse, with the row EINTs re-enabled after every scan the held
+ * row re-fires through mt-eint's edge emulation on each scan and a held key
+ * rescans continuously. These override the overlay for that node only.
+ */
+#define COUCH_HA100_KEYPAD_NODE		"mt_gpio_kpd"
+/* Validated on the HA100: 20 rapid taps deliver 20 presses; 50 gave 8. */
+#define COUCH_HA100_DEBOUNCE_MS		8
+/*
+ * Settle time after driving a column before the four rows are read. The row
+ * pull-ups against PCB trace capacitance settle in a few microseconds; 50 is
+ * an order of magnitude above that and a quarter of the overlay's 200, which
+ * was sized for the vendor's larger matrices.
+ */
+#define COUCH_HA100_COL_SCAN_DELAY_US	50
+/*
+ * While any key is held the row IRQs stay off and the matrix is rescanned at
+ * this interval: releases and a second key are seen within one interval, and
+ * no interrupt fires until every key is up.
+ */
+#define COUCH_HA100_HOLD_POLL_MS	20
+
 struct matrix_keypad {
 	const struct matrix_keypad_platform_data *pdata;
 	struct input_dev *input_dev;
@@ -39,7 +66,27 @@ struct matrix_keypad {
 	bool scan_pending;
 	bool stopped;
 	bool gpio_all_disabled;
+	/* HA100 quirk: poll instead of re-enabling row IRQs while a key is held */
+	bool hold_poll;
+	/* HA100 quirk: row IRQs left enabled for wake across a system sleep */
+	bool wake_irqs_enabled;
 };
+
+static bool matrix_keypad_ha100(const struct device_node *np)
+{
+	return IS_ENABLED(CONFIG_COUCH_HA100) && np &&
+	       !strcmp(np->name, COUCH_HA100_KEYPAD_NODE);
+}
+
+static bool matrix_keypad_any_down(const uint32_t *state, int ncols)
+{
+	int col;
+
+	for (col = 0; col < ncols; col++)
+		if (state[col])
+			return true;
+	return false;
+}
 
 /*
  * NOTE: normally the GPIO has to be put into HiZ when de-activated to cause
@@ -164,10 +211,23 @@ static void matrix_keypad_scan(struct work_struct *work)
 
 	activate_all_cols(pdata, true);
 
-	/* Enable IRQs again */
 	spin_lock_irq(&keypad->lock);
-	keypad->scan_pending = false;
-	enable_row_irqs(keypad);
+	if (keypad->hold_poll && !keypad->stopped &&
+	    matrix_keypad_any_down(new_state, pdata->num_col_gpios)) {
+		/*
+		 * A held key keeps its row asserted, and the column strobes
+		 * of every scan edge it again. Leave the row IRQs disabled
+		 * (scan_pending stays set for the handler and for stop) and
+		 * poll until a scan finds every key released.
+		 */
+		keypad->scan_pending = true;
+		schedule_delayed_work(&keypad->work,
+				      msecs_to_jiffies(COUCH_HA100_HOLD_POLL_MS));
+	} else {
+		/* Enable IRQs again */
+		keypad->scan_pending = false;
+		enable_row_irqs(keypad);
+	}
 	spin_unlock_irq(&keypad->lock);
 }
 
@@ -212,9 +272,38 @@ static int matrix_keypad_start(struct input_dev *dev)
 	return 0;
 }
 
+/*
+ * HA100 hold polling reschedules the scan from itself, so a stop must cancel
+ * the pending poll rather than flush it, and then account for the row IRQs
+ * the interrupt handler or the poll already disabled.
+ */
+static void matrix_keypad_ha100_stop(struct matrix_keypad *keypad)
+{
+	/* Under the lock: from here on the handler queues no more scans. */
+	spin_lock_irq(&keypad->lock);
+	keypad->stopped = true;
+	spin_unlock_irq(&keypad->lock);
+
+	/* A running scan sees stopped and enables the IRQs; a queued one is dropped. */
+	cancel_delayed_work_sync(&keypad->work);
+
+	spin_lock_irq(&keypad->lock);
+	if (keypad->scan_pending)
+		/* Row IRQs are already disabled by the handler or the poll. */
+		keypad->scan_pending = false;
+	else
+		disable_row_irqs(keypad);
+	spin_unlock_irq(&keypad->lock);
+}
+
 static void matrix_keypad_stop(struct input_dev *dev)
 {
 	struct matrix_keypad *keypad = input_get_drvdata(dev);
+
+	if (keypad->hold_poll) {
+		matrix_keypad_ha100_stop(keypad);
+		return;
+	}
 
 	keypad->stopped = true;
 	mb();
@@ -277,8 +366,20 @@ static int matrix_keypad_suspend(struct device *dev)
 
 	matrix_keypad_stop(keypad->input_dev);
 
-	if (device_may_wakeup(&pdev->dev))
+	if (device_may_wakeup(&pdev->dev)) {
 		matrix_keypad_enable_wakeup(keypad);
+		if (keypad->hold_poll) {
+			/*
+			 * mt-eint disables lazily: a row whose EINT fired while
+			 * the IRQs were off (every hold poll strobes it) is
+			 * masked in hardware and could not wake the system.
+			 * Keep the row IRQs enabled for the sleep; the handler
+			 * ignores them while stopped and resume takes them back.
+			 */
+			enable_row_irqs(keypad);
+			keypad->wake_irqs_enabled = true;
+		}
+	}
 
 	return 0;
 }
@@ -288,6 +389,10 @@ static int matrix_keypad_resume(struct device *dev)
 	struct platform_device *pdev = to_platform_device(dev);
 	struct matrix_keypad *keypad = platform_get_drvdata(pdev);
 
+	if (keypad->wake_irqs_enabled) {
+		disable_row_irqs(keypad);
+		keypad->wake_irqs_enabled = false;
+	}
 	if (device_may_wakeup(&pdev->dev))
 		matrix_keypad_disable_wakeup(keypad);
 
@@ -427,7 +532,7 @@ matrix_keypad_parse_dt(struct device *dev)
 		pdata->no_autorepeat = true;
 	/* The HA100 vendor overlay predates wake support. Keep this quirk in
 	 * the trial kernel so the independent rescue DT remains untouched. */
-	if ((IS_ENABLED(CONFIG_COUCH_HA100) && !strcmp(np->name, "mt_gpio_kpd")) ||
+	if (matrix_keypad_ha100(np) ||
 	    of_get_property(np, "linux,wakeup", NULL))
 		pdata->wakeup = true;
 	if (of_get_property(np, "gpio-activelow", NULL))
@@ -436,6 +541,19 @@ matrix_keypad_parse_dt(struct device *dev)
 	of_property_read_u32(np, "debounce-delay-ms", &pdata->debounce_ms);
 	of_property_read_u32(np, "col-scan-delay-us",
 						&pdata->col_scan_delay_us);
+	if (matrix_keypad_ha100(np)) {
+		dev_info(dev, "HA100 keypad: debounce %u -> %u ms, column settle %u -> %u us, poll every %u ms while held\n",
+			 pdata->debounce_ms,
+			 min_t(u32, pdata->debounce_ms, COUCH_HA100_DEBOUNCE_MS),
+			 pdata->col_scan_delay_us,
+			 min_t(u32, pdata->col_scan_delay_us,
+			       COUCH_HA100_COL_SCAN_DELAY_US),
+			 COUCH_HA100_HOLD_POLL_MS);
+		pdata->debounce_ms = min_t(u32, pdata->debounce_ms,
+					   COUCH_HA100_DEBOUNCE_MS);
+		pdata->col_scan_delay_us = min_t(u32, pdata->col_scan_delay_us,
+						 COUCH_HA100_COL_SCAN_DELAY_US);
+	}
 
 	gpios = devm_kzalloc(dev,
 			     sizeof(unsigned int) *
@@ -498,6 +616,7 @@ static int matrix_keypad_probe(struct platform_device *pdev)
 	keypad->pdata = pdata;
 	keypad->row_shift = get_count_order(pdata->num_col_gpios);
 	keypad->stopped = true;
+	keypad->hold_poll = matrix_keypad_ha100(pdev->dev.of_node);
 	INIT_DELAYED_WORK(&keypad->work, matrix_keypad_scan);
 	spin_lock_init(&keypad->lock);
 
