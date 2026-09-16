@@ -83,6 +83,10 @@
 #include <mt-plat/charging.h>
 #include <mt-plat/battery_meter.h>
 #include <mt-plat/battery_common.h>
+#if defined(CONFIG_COUCH_HA100) && defined(SOC_BY_SW_FG)
+#include "ha100-battery-report.h"
+#define COUCH_SW_BATTERY_REPORT
+#endif
 #include "cust_battery_meter.h"
 
 #include "cust_charging.h"
@@ -331,9 +335,11 @@ static enum power_supply_property ac_props[] = {
 
 static enum power_supply_property usb_props[] = {
 	POWER_SUPPLY_PROP_ONLINE,
+#ifndef COUCH_SW_BATTERY_REPORT
 	POWER_SUPPLY_PROP_CURRENT_MAX,
 	POWER_SUPPLY_PROP_VOLTAGE_MAX,
 	POWER_SUPPLY_PROP_CHARGE_COUNTER
+#endif
 };
 
 static enum power_supply_property battery_props[] = {
@@ -342,10 +348,13 @@ static enum power_supply_property battery_props[] = {
 	POWER_SUPPLY_PROP_PRESENT,
 	POWER_SUPPLY_PROP_TECHNOLOGY,
 	POWER_SUPPLY_PROP_CAPACITY,
+#ifndef COUCH_SW_BATTERY_REPORT
+	/* Keep the legacy ABI off HA100; its estimates use couch_gauge instead. */
 	POWER_SUPPLY_PROP_CURRENT_NOW,
 	POWER_SUPPLY_PROP_CURRENT_MAX,
 	POWER_SUPPLY_PROP_VOLTAGE_MAX,
 	POWER_SUPPLY_PROP_CHARGE_COUNTER,
+#endif
 	/* Add for Battery Service */
 	POWER_SUPPLY_PROP_batt_vol,
 	POWER_SUPPLY_PROP_batt_temp,
@@ -614,6 +623,10 @@ static int usb_get_property(struct power_supply *psy,
 	int ret = 0;
 	struct usb_data *data = container_of(psy, struct usb_data, psy);
 
+#ifdef COUCH_SW_BATTERY_REPORT
+	if (psp != POWER_SUPPLY_PROP_ONLINE)
+		return -ENODATA;
+#endif
 	switch (psp) {
 	case POWER_SUPPLY_PROP_ONLINE:
 #if defined(CONFIG_POWER_EXT)
@@ -651,6 +664,38 @@ static int battery_get_property(struct power_supply *psy,
 	int ret = 0;
 	struct battery_data *data = container_of(psy, struct battery_data, psy);
 
+#ifdef COUCH_SW_BATTERY_REPORT
+	struct couch_battery_meter_state meter;
+
+	battery_meter_couch_state(&meter);
+	switch (psp) {
+	case POWER_SUPPLY_PROP_CURRENT_NOW:
+	case POWER_SUPPLY_PROP_CURRENT_MAX:
+	case POWER_SUPPLY_PROP_VOLTAGE_MAX:
+	case POWER_SUPPLY_PROP_CHARGE_COUNTER:
+		return -ENODATA;
+	case POWER_SUPPLY_PROP_batt_temp:
+		if (meter.temperature_fixed || battery_cmd_thermal_test_mode)
+			return -ENODATA;
+		break;
+	case POWER_SUPPLY_PROP_CAPACITY:
+		if (!g_battery_soc_ready || !BMT_status.bat_exist)
+			return -ENODATA;
+		break;
+	case POWER_SUPPLY_PROP_STATUS:
+		if (!g_battery_soc_ready) {
+			val->intval = POWER_SUPPLY_STATUS_UNKNOWN;
+			return 0;
+		}
+		break;
+	case POWER_SUPPLY_PROP_HEALTH:
+		/* The inherited profile and forced temperature cannot establish health. */
+		val->intval = POWER_SUPPLY_HEALTH_UNKNOWN;
+		return 0;
+	default:
+		break;
+	}
+#endif
 	switch (psp) {
 	case POWER_SUPPLY_PROP_STATUS:
 		val->intval = data->BAT_STATUS;
@@ -1735,6 +1780,86 @@ static ssize_t store_Pump_Express(struct device *dev, struct device_attribute *a
 
 static DEVICE_ATTR(Pump_Express, 0664, show_Pump_Express, store_Pump_Express);
 
+#ifdef COUCH_SW_BATTERY_REPORT
+/* A read only copies the last update, even during a charger state transition. */
+static DEFINE_SPINLOCK(couch_gauge_lock);
+static char couch_gauge_snapshot[1536] = "schema=1\nready=0\n";
+static size_t couch_gauge_length = sizeof("schema=1\nready=0\n") - 1;
+static unsigned int couch_gauge_sequence;
+
+static void couch_update_gauge_snapshot(struct battery_data *data)
+{
+	struct couch_battery_meter_state meter;
+	struct timespec now;
+	unsigned long flags;
+	static const int status[] = {
+		[HA100_BATTERY_UNKNOWN] = POWER_SUPPLY_STATUS_UNKNOWN,
+		[HA100_BATTERY_CHARGING] = POWER_SUPPLY_STATUS_CHARGING,
+		[HA100_BATTERY_DISCHARGING] = POWER_SUPPLY_STATUS_DISCHARGING,
+		[HA100_BATTERY_NOT_CHARGING] = POWER_SUPPLY_STATUS_NOT_CHARGING,
+		[HA100_BATTERY_FULL] = POWER_SUPPLY_STATUS_FULL,
+	};
+
+	battery_meter_couch_state(&meter);
+	get_monotonic_boottime(&now);
+	data->BAT_STATUS = status[ha100_battery_status(g_battery_soc_ready,
+		BMT_status.bat_exist, BMT_status.charger_exist,
+		BMT_status.bat_charging_state == CHR_ERROR ||
+		BMT_status.bat_charging_state == CHR_HOLD || cmd_discharging == 1 ||
+		g_platform_boot_mode == META_BOOT || g_platform_boot_mode == ADVMETA_BOOT,
+		BMT_status.bat_full, BMT_status.bat_in_recharging_state)];
+	spin_lock_irqsave(&couch_gauge_lock, flags);
+	couch_gauge_length = scnprintf(couch_gauge_snapshot,
+		sizeof(couch_gauge_snapshot),
+		"schema=1\nready=%d\nsequence=%u\nsampled_boottime_seconds=%ld\n"
+		"method=software\ncalibration=unverified\n"
+		"soc_percent=%d\nui_soc_percent=%d\n"
+		"charger_online=%d\ncharger_type=%u\ncharger_state=%d\n"
+		"full=%d\nrecharging=%d\nstatus=%d\n"
+		"voltage_mv=%u\ncharger_voltage_mv=%u\n"
+		"current_estimate_ua=%d\ncurrent_estimate_positive=discharge\n"
+		"charging_sense_ma=%d\n"
+		"temperature_fixed=%d\nalgorithm_temperature_c=%d\n"
+		"thermistor_voltage_mv=%d\nthermistor_resistance_ohm=%d\n"
+		"profile_qmax_25_mah=%d\nmodel_qmax_mah=%d\n"
+		"model_ocv_mv=%d\nmodel_resistance_mohm=%d\n"
+		"model_discharge_tenth_mah=%d\n"
+		"sense_resistance_mohm=%d\n"
+		"high_voltage_profile=%d\nfull_current_ma=%d\nrecharge_mv=%d\n"
+		"sync_tracking_seconds=%d\ntask_period_seconds=%d\n",
+		g_battery_soc_ready, ++couch_gauge_sequence, now.tv_sec,
+		BMT_status.SOC, BMT_status.UI_SOC,
+		BMT_status.charger_exist, BMT_status.charger_type,
+		BMT_status.bat_charging_state, BMT_status.bat_full,
+		BMT_status.bat_in_recharging_state, data->BAT_STATUS,
+		BMT_status.bat_vol, BMT_status.charger_vol,
+		BMT_status.CURRENT_NOW * 100, BMT_status.ICharging,
+		meter.temperature_fixed || battery_cmd_thermal_test_mode,
+		BMT_status.temperature, BMT_status.temperatureV, BMT_status.temperatureR,
+		batt_meter_cust_data.q_max_pos_25, meter.qmax_mah, meter.ocv_mv,
+		meter.resistance_mohm, meter.discharge_tenth_mah,
+		batt_meter_cust_data.cust_r_sense,
+		batt_cust_data.high_battery_voltage_support,
+		batt_cust_data.charging_full_current, batt_cust_data.recharging_voltage,
+		batt_cust_data.sync_to_real_tracking_time, BAT_TASK_PERIOD);
+	spin_unlock_irqrestore(&couch_gauge_lock, flags);
+}
+
+static ssize_t couch_gauge_show(struct device *dev,
+			       struct device_attribute *attr, char *buf)
+{
+	unsigned long flags;
+	size_t length;
+
+	spin_lock_irqsave(&couch_gauge_lock, flags);
+	length = couch_gauge_length;
+	memcpy(buf, couch_gauge_snapshot, length);
+	spin_unlock_irqrestore(&couch_gauge_lock, flags);
+	return length;
+}
+static DEVICE_ATTR(couch_gauge, 0444, couch_gauge_show, NULL);
+#endif
+
 static void mt_battery_update_EM(struct battery_data *bat_data)
 {
 	bat_data->BAT_CAPACITY = BMT_status.UI_SOC;
@@ -2029,6 +2154,10 @@ static void battery_update(struct battery_data *bat_data)
 
 	if (cmd_discharging == 1)
 		bat_data->BAT_STATUS = POWER_SUPPLY_STATUS_CMD_DISCHARGING;
+
+#ifdef COUCH_SW_BATTERY_REPORT
+	couch_update_gauge_snapshot(bat_data);
+#endif
 
 	if (adjust_power != -1) {
 		bat_data->adjust_power = adjust_power;
@@ -4424,6 +4553,12 @@ static int battery_probe(struct platform_device *dev)
 	}
 	battery_log(BAT_LOG_CRTI, "[BAT_probe] power_supply_register Battery Success !!\n");
 
+#ifdef COUCH_SW_BATTERY_REPORT
+	ret = device_create_file(battery_main.psy.dev, &dev_attr_couch_gauge);
+	if (ret)
+		dev_warn(&dev->dev, "could not create couch_gauge: %d\n", ret);
+#endif
+
 #if !defined(CONFIG_POWER_EXT)
 
 #ifdef CONFIG_MTK_POWER_EXT_DETECT
@@ -4631,6 +4766,9 @@ static void battery_timer_resume(void)
 
 static int battery_remove(struct platform_device *dev)
 {
+#ifdef COUCH_SW_BATTERY_REPORT
+	device_remove_file(battery_main.psy.dev, &dev_attr_couch_gauge);
+#endif
 	battery_log(BAT_LOG_CRTI, "******** battery driver remove!! ********\n");
 
 	return 0;
