@@ -1,38 +1,39 @@
 # Bluetooth on the HA100 kernel
 
-Kernel-side tasks for Bluetooth Low Energy. The full findings, userland plan
-and staging checklist live in the Couch repository at `docs/bluetooth.md` on
-its `bluetooth` branch. This file tracks only what changes in this tree.
+This file records the kernel-side implementation. Current user-facing behavior,
+release notes, and pairing guidance live in the Couch repository.
 
-## State (2026-09-12)
+## Current source and configuration
 
-- `CONFIG_MTK_COMBO_BT=y` and `CONFIG_MTK_BTIF=y` build the MediaTek CONSYS_6580
-  Bluetooth transport in. `stp_chrdev_bt.c` creates `/dev/stpbt`; opening it
-  calls `mtk_wcn_wmt_func_on(WMTDRV_TYPE_BT)` and reads/writes raw HCI
-  packets through `mtk_wcn_stp_{send,receive}_data(..., BT_TASK_INDX)`.
-- `CONFIG_BT` is not set. There is no HCI device, so BlueZ has nothing to
-  attach to. Stock Android never needed it (Bluedroid talks to `/dev/stpbt`).
-- Never exercised on this hardware, from-source or stock.
+The HA100 vendor transport remains built in through `CONFIG_MTK_COMBO_BT=y` and
+`CONFIG_MTK_BTIF=y`. It exposes the MediaTek STP transport used by both the
+legacy Android character-device path and Couch's HCI driver.
 
-## Tasks
+The base 3.18 configuration deliberately leaves `CONFIG_BT` off. Couch ships a
+matching backported 4.4 Bluetooth core as modules with the boot payload:
+`compat.ko`, `bluetooth.ko`, `hci_vhci.ko`, and `hci_stp.ko`. `hci_stp` binds a
+BlueZ `hci_dev` to the STP export API, powers the Bluetooth function while the
+adapter is open, and owns H4 receive reassembly for the supported core versions.
 
-1. Config: `CONFIG_BT=y`, `CONFIG_BT_HCIVHCI=y` (the virtual HCI driver in
-   `drivers/bluetooth/hci_vhci.c`). Leave `BT_RFCOMM`, `BT_BNEP`, `BT_HIDP`
-   off. Linux 3.18 has no separate LE option; LE comes with `CONFIG_BT`.
-2. Spike: a userland daemon in Couch shuttles packets between `/dev/vhci` and
-   `/dev/stpbt`. Acceptance is `hci0` coming up with LE reported.
-3. Proper driver, once the spike proves the radio: a small `hci_dev` on top of
-   the STP BT interface, next to `stp_chrdev_bt.c`, gated by a new Kconfig
-   symbol so the character device remains available. `hdev->open` powers the
-   function on through WMT, `hdev->send` forwards to `mtk_wcn_stp_send_data`,
-   and the STP event callback drains the RX queue into `hci_recv_frame`.
-4. Address: find the CONSYS_6580 vendor HCI command that programs the BD
-   address, so Couch can write the owner's recorded `bluetooth_mac` at
-   bring-up. Stock reads it from NVRAM, which this tree does not carry.
+The selected normal kernel source is commit `81d180fc`. The matching module
+vermagic and source/configuration hashes are recorded by Couch's release pin
+and source receipts. Build this tree through the documented generic local or
+explicit remote builder interface; no particular workstation or host layout is
+part of the source contract.
 
-## Constraints
+## Acceptance
 
-- No `Add Advertising` management command in 3.18 (added in 4.2), so the
-  BlueZ advertising D-Bus API is unavailable; advertising is raw HCI.
-- No LE Secure Connections in 3.18; legacy LE pairing only.
-- Builds run on Ollie (`~/couch-kernel/base`), not from the Mac copy.
+The OTA kernel/boot payload based on this source was accepted on HA100 for
+Bluetooth startup with Wi-Fi present, an existing bonded device after reboot,
+undocked standby/wake with keys, and IR before and after wake. These observations
+confirm the tested payload behavior; they do not establish battery calibration,
+quantitative standby savings, clean-installer behavior, or recovery validation.
+
+## Maintainer notes
+
+The module build recipe and the Couch STP driver source are retained in the
+Couch repository under `kernel/backports/`, alongside the backports source
+receipt. Keep the backported modules tied to the exact base-kernel build:
+`MODVERSIONS` and vermagic make them unsuitable for a different kernel commit.
+Do not enable the in-tree 3.18 Bluetooth core as a substitute for these modules
+without a separate source, module, and hardware validation round.
