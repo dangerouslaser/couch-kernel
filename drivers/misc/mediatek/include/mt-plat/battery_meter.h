@@ -337,6 +337,18 @@ typedef enum {
 
 extern struct battery_meter_custom_data batt_meter_cust_data;
 
+#if defined(CONFIG_COUCH_HA100) && defined(SOC_BY_SW_FG)
+/* Cached software-gauge state; reading it must not sample or reset hardware. */
+struct couch_battery_meter_state {
+	int temperature_fixed;
+	int qmax_mah;
+	int ocv_mv;
+	int resistance_mohm;
+	int discharge_tenth_mah;
+};
+extern void battery_meter_couch_state(struct couch_battery_meter_state *state);
+#endif
+
 
 #if !defined(CONFIG_MTK_HAFG_20)
 #ifdef MTK_ENABLE_AGING_ALGORITHM

@@ -1,0 +1,71 @@
+What:           /sys/class/power_supply/battery/couch_gauge
+Date:           September 2026
+KernelVersion:  3.18.79-couch (HA100 vendor tree)
+Contact:        https://github.com/dangerouslaser/couch-kernel/issues
+Description:
+                Read-only diagnostic snapshot for CONFIG_COUCH_HA100 with
+                SOC_BY_SW_FG. One read copies the last battery task update;
+                it does not sample ADCs, run the model or reset a counter.
+                It is not a power_supply property and is not in uevents.
+                Before the first update only schema=1 and ready=0 are present.
+
+                Format is newline-delimited key=value, schema version 1.
+                Consumers must ignore unknown keys and reject malformed values.
+                Fields are decimal integers except the three strings below.
+
+                schema: format version (1).
+                ready: battery SOC initialization completed (0/1).
+                sequence: unsigned update count (wraps); repeated reads need
+                    not advance it. Updates normally occur every 10 seconds.
+                sampled_boottime_seconds: update time including suspend.
+                method: "software". There is no hardware coulomb counter.
+                calibration: "unverified". The inherited phone profile has
+                    not been calibrated for the HA100 cell or thermistor.
+                soc_percent: model SOC before display smoothing.
+                ui_soc_percent: smoothed percentage exported as capacity.
+                charger_online: detected external power (0/1).
+                charger_type: CHARGER_TYPE from mt-plat/charging.h.
+                charger_state: CHR_* from mt-plat/battery_common.h.
+                full, recharging: charge algorithm flags (0/1).
+                status: POWER_SUPPLY_STATUS_* exported at this update.
+                voltage_mv, charger_voltage_mv: averaged ADC voltages in mV.
+                current_estimate_ua: modeled current in microamps, NOT measured.
+                current_estimate_positive: "discharge"; negative is charge.
+                charging_sense_ma: ADC-difference charging estimate in mA;
+                    assumes the board's sense resistance. Zero when unplugged,
+                    not a measurement of the remote's discharge current.
+                temperature_fixed: algorithm uses forced/test temperature (0/1).
+                algorithm_temperature_c: input used by the algorithm in deg C;
+                    when temperature_fixed=1 it is NOT a measured temperature.
+                thermistor_voltage_mv, thermistor_resistance_ohm: cached raw
+                    thermistor inputs, not proof of a calibrated temperature.
+                profile_qmax_25_mah: inherited nominal 25 C capacity in mAh.
+                model_qmax_mah: current aging-adjusted model capacity in mAh.
+                model_ocv_mv, model_resistance_mohm: modeled OCV/resistance.
+                model_discharge_tenth_mah: software integration in 0.1 mAh,
+                    positive discharge; resets during algorithm corrections.
+                    This is NOT a lifetime or hardware charge counter.
+                sense_resistance_mohm: configured charge sense resistance.
+                high_voltage_profile: inherited high voltage profile (0/1),
+                    not a measured/programmed charge voltage readback.
+                full_current_ma, recharge_mv: configured termination/recharge
+                    thresholds, not independently verified cell specifications.
+                sync_tracking_seconds, task_period_seconds: nominal UI tracking
+                    interval/task period; scheduling and the tracking counter
+                    can add a task interval between percentage decrements.
+
+                Charging/Full describe the vendor charge algorithm state, not
+                independently measured current/charge completion. UI capacity
+                reaching 100 alone no longer overrides status; Full requires
+                the full flag and no active recharge. The existing algorithm
+                can itself mark full at 100 on insertion. Charge control and
+                that policy are unchanged; calibration remains unresolved.
+
+                HA100 standard properties intentionally omit current_now,
+                current_max, voltage_max and charge_counter (also omit the
+                constant USB maxima/counter). Their previous values were a
+                model estimate or placeholders, not the advertised measurements.
+                batt_temp returns ENODATA when fixed/test temperature is active;
+                capacity returns ENODATA before SOC is ready or without a cell.
+                health is Unknown until real health reporting is implemented.
+                Other boards retain their original ABI.

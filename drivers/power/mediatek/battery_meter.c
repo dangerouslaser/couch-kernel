@@ -3829,6 +3829,21 @@ signed int battery_meter_get_QMAX25(void)
 	return batt_meter_cust_data.q_max_pos_25;
 }
 
+#if defined(CONFIG_COUCH_HA100) && defined(SOC_BY_SW_FG)
+void battery_meter_couch_state(struct couch_battery_meter_state *state)
+{
+#if defined(CONFIG_POWER_EXT) || defined(FIXED_TBAT_25)
+	state->temperature_fixed = 1;
+#else
+	state->temperature_fixed = batt_meter_cust_data.fixed_tbat_25;
+#endif
+	state->qmax_mah = gFG_BATT_CAPACITY_aging;
+	state->ocv_mv = oam_v_ocv_2;
+	state->resistance_mohm = oam_r_2;
+	state->discharge_tenth_mah = oam_car_2;
+}
+#endif
+
 /* ============================================================ // */
 static ssize_t fgadc_log_write(struct file *filp, const char __user *buff,
 			       size_t len, loff_t *data)
